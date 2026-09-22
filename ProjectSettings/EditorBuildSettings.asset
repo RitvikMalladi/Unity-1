@@ -1,0 +1,37 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Home.unity
+    guid: 8a3f6c2e91d4b4b4a9c1e6f2d7a58b3c
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Garage.unity
+    guid: d51e9094e0e413f41bcdd5715a359ad3
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_1.unity
+    guid: 122594f3dd0a4dd4bba025538426c85b
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_2.unity
+    guid: 0be9ab6858e553342acf6ba64c92dabb
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_3.unity
+    guid: dd75fb81c6dd64d4b81cc258a844116e
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_4.unity
+    guid: 0b49cf27699040d4e992b70bbda05e4b
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_5.unity
+    guid: af410582e72ec8140934d1486e82b28e
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/Racing/Race_Track_6.unity
+    guid: b69dad6874499574bbbcdd2f99a938d6
+  - enabled: 1
+    path: Assets/Racing_Game/Scene/RemoteController.unity
+    guid: 31df830476947bf47add9ea08100994e
+  m_configObjects:
+    com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+  m_UseUCBPForAssetBundles: 0
