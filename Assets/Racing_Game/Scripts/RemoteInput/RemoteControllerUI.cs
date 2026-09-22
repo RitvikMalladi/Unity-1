@@ -160,14 +160,14 @@ namespace ALIyerEdon.RemoteInput
                   0.00f, 0.93f, 0.20f, 1.00f, 20, FontStyle.Bold, C_WHITE,
                   TextAnchor.MiddleCenter);
 
-            // "Game IP:" label
-            MkTxt(root, "IPLbl", "Game IP:",
+            // "Room:" label
+            MkTxt(root, "IPLbl", "Room:",
                   0.20f, 0.92f, 0.30f, 1.00f, 17, FontStyle.Normal, C_GREY,
                   TextAnchor.MiddleRight);
 
-            // IP input field
+            // Room code input field
             s.ipInputField = MkInputField(root,
-                PlayerPrefs.GetString("RemoteTargetIP", "192.168.1.100"),
+                PlayerPrefs.GetString("RemoteRoomCode", ""),
                 0.31f, 0.93f, 0.53f, 0.99f);
             s.ipInputField.onEndEdit.AddListener(_ => s.Connect());
 
@@ -615,7 +615,7 @@ namespace ALIyerEdon.RemoteInput
             var ph  = NewGO(go.transform, "PH", typeof(RectTransform), typeof(TextMeshProUGUI));
             FillChild(ph);
             var phT = ph.GetComponent<TMP_Text>();
-            phT.text      = "192.168.x.x";
+            phT.text      = "1234";
             phT.fontStyle = FontStyles.Italic;
             phT.fontSize  = 18;
             phT.color     = new Color(0.42f, 0.44f, 0.54f);
@@ -639,9 +639,8 @@ namespace ALIyerEdon.RemoteInput
             f.textComponent = txT;
             f.placeholder   = phT;
             f.text          = defaultVal;
-            // DecimalNumber only allows a single '.' — an IP address needs three, so use Standard.
             f.contentType   = TMP_InputField.ContentType.Standard;
-            f.characterLimit = 30;
+            f.characterLimit = 12;
             return f;
         }
 

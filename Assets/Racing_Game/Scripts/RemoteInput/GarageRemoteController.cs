@@ -1,19 +1,17 @@
 //──────────────────────────────────────────────────────────────
-// GarageRemoteController.cs  —  GAME APK side
+// GarageRemoteController.cs  —  GAME APK / WebGL side
 //
-// Place on any persistent GameObject in the Garage scene.
-// Listens for GarageCommandData packets on a separate UDP port
-// (default 5556) and calls the existing CarSelect / LevelSelect
+// NOTE: despite the class name (kept unchanged so existing scene
+// references don't break), this no longer opens a raw UDP socket.
+// It joins the same relay room as UDPInputReceiver (see
+// RelayLink.cs / RelayServer/) and receives "garage" JSON messages
+// over a WebSocket, then calls the existing CarSelect / LevelSelect
 // public methods — zero changes to existing scripts.
 //
 // Also responds to keyboard shortcuts so you can test without
 // a phone (arrow keys + Enter + Escape).
 //──────────────────────────────────────────────────────────────
 
-using System;
-using System.Net;
-using System.Net.Sockets;
-using System.Threading;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.InputSystem;
@@ -25,8 +23,8 @@ namespace ALIyerEdon.RemoteInput
     public class GarageRemoteController : MonoBehaviour
     {
         [Header("Network")]
-        [Tooltip("Port for garage commands. Different from the driving port (5555).")]
-        public int  commandPort   = 5556;
+        [Tooltip("Room code the controller phone must enter. Leave blank to auto-generate one per device (recommended) — same code shown on the race track's HUD.")]
+        public string roomCode = "";
         [Tooltip("Seconds without a packet before connection indicator goes grey.")]
         public float timeoutSecs  = 3f;
 
@@ -37,11 +35,11 @@ namespace ALIyerEdon.RemoteInput
         public LevelSelect levelSelect;
 
         [Header("HUD")]
-        [Tooltip("Optional text element showing remote IP and connection state.")]
+        [Tooltip("Optional text element showing the room code and connection state.")]
         public Text statusText;
-        [Tooltip("Show local IP:port so user knows what to type on the phone.")]
+        [Tooltip("Show the room code so the user knows what to type on the phone.")]
         public bool showIPOnStart = true;
-        [Tooltip("Auto-create a small on-screen IP overlay when statusText is left empty.")]
+        [Tooltip("Auto-create a small on-screen overlay when statusText is left empty.")]
         public bool autoCreateHUD = true;
 
         [Header("Debug")]
@@ -49,15 +47,12 @@ namespace ALIyerEdon.RemoteInput
 
         // ── Public state ──────────────────────────────────────
         public bool   IsConnected { get; private set; }
-        public string RemoteIP    { get; private set; } = "–";
+        public string RemoteIP    { get; private set; } = "–";   // now holds the room code once linked
 
         // ── Private ───────────────────────────────────────────
-        UdpClient  _udp;
-        Thread     _thread;
-        volatile bool _running;
+        RelayLink _link;
 
         GarageCommandData _pending;
-        readonly object   _lock       = new object();
         bool              _hasCommand;
         float             _lastPacket;
 
@@ -71,51 +66,41 @@ namespace ALIyerEdon.RemoteInput
             if (statusText == null && autoCreateHUD)
                 statusText = CreateStatusHUD();
 
-            OpenSocket();
+            if (string.IsNullOrEmpty(roomCode))
+                roomCode = UDPInputReceiver.GetOrCreateSessionRoomCode();
+
+            _link = GetComponent<RelayLink>() ?? gameObject.AddComponent<RelayLink>();
+            _link.OnMessage    += HandleMessage;
+            _link.OnPeerJoined += () => { if (verboseLog) Debug.Log("[GarageRemoteController] Controller linked."); };
+            _link.OnPeerLeft   += () => { if (verboseLog) Debug.Log("[GarageRemoteController] Controller unlinked."); };
+            _link.Connect(roomCode, "game");
+            RemoteIP = roomCode;
 
             if (showIPOnStart)
             {
-                string ip = UDPInputReceiver.LocalIPAddress();
-                Debug.Log($"[GarageRemoteController] Listening on {ip}:{commandPort}");
-                UpdateStatus($"Game IP: {ip}");
+                Debug.Log($"[GarageRemoteController] Room code: {roomCode}");
+                UpdateStatus($"Room: {roomCode}");
             }
         }
 
-        void OnDestroy()
-        {
-            CloseSocket();
-        }
-
-        void OnApplicationQuit()
-        {
-            CloseSocket();
-        }
+        void OnDestroy()         => _link?.Disconnect();
+        void OnApplicationQuit() => _link?.Disconnect();
 
         // ── Main thread update ────────────────────────────────
         void Update()
         {
-            // Consume UDP command
-            GarageCommandData cmd = default;
-            bool hasCmd = false;
-
-            lock (_lock)
+            if (_hasCommand)
             {
-                if (_hasCommand)
-                {
-                    cmd         = _pending;
-                    _hasCommand = false;
-                    hasCmd      = true;
-                    _lastPacket = Time.time;
+                var cmd = _pending;
+                _hasCommand = false;
+                _lastPacket = Time.time;
 
-                    if (!IsConnected)
-                        RemoteInputBootstrapper.EnableRemote(); // phone is in control — use it for the race too
+                if (!IsConnected)
+                    RemoteInputBootstrapper.EnableRemote(); // phone is in control — use it for the race too
 
-                    IsConnected = true;
-                }
-            }
-
-            if (hasCmd)
+                IsConnected = true;
                 ExecuteCommand(cmd);
+            }
 
             // Keyboard fallback (for testing without phone)
             HandleKeyboard();
@@ -124,15 +109,17 @@ namespace ALIyerEdon.RemoteInput
             if (IsConnected && Time.time - _lastPacket > timeoutSecs)
             {
                 IsConnected = false;
-                UpdateStatus($"Game IP: {UDPInputReceiver.LocalIPAddress()}");
+                UpdateStatus($"Room: {roomCode}");
             }
         }
 
         // ── Command dispatch ──────────────────────────────────
         void ExecuteCommand(GarageCommandData cmd)
         {
+            var command = (GarageCommand)cmd.command;
+
             if (verboseLog)
-                Debug.Log($"[GarageRemoteController] Command: {cmd.command}  param:{cmd.param}");
+                Debug.Log($"[GarageRemoteController] Command: {command}  param:{cmd.param}");
 
             // The active CarSelect/LevelSelect belong to whichever mode panel is
             // currently shown — re-resolve if a mode switch left the cached one inactive.
@@ -141,7 +128,7 @@ namespace ALIyerEdon.RemoteInput
             if (levelSelect == null || !levelSelect.gameObject.activeInHierarchy)
                 levelSelect = FindFirstObjectByType<LevelSelect>();
 
-            switch (cmd.command)
+            switch (command)
             {
                 case GarageCommand.NextCar:
                     carSelect?.NextCar();
@@ -202,7 +189,7 @@ namespace ALIyerEdon.RemoteInput
 
             // Update HUD
             if (IsConnected)
-                UpdateStatus($"● {RemoteIP}  [{cmd.command}]");
+                UpdateStatus($"● room {roomCode}  [{command}]");
         }
 
         // ── Game mode tab buttons ("Select_Sport"/"Select_Truck"/"Select_F1"/"Select_Offroad") ──
@@ -246,76 +233,17 @@ namespace ALIyerEdon.RemoteInput
             }
         }
 
-        // ── UDP socket ────────────────────────────────────────
-        void OpenSocket()
+        // ── Relay message handling ─────────────────────────────
+        [System.Serializable]
+        struct GarageEnvelope { public string t; public byte command; public byte param; }
+
+        void HandleMessage(string json)
         {
-            try
-            {
-                _udp = new UdpClient(commandPort);
-                _udp.Client.ReceiveTimeout = 500;
-                _running = true;
-                _lastPacket = Time.time;
+            var env = JsonUtility.FromJson<GarageEnvelope>(json);
+            if (env.t != "garage") return;
 
-                _thread = new Thread(ReceiveLoop)
-                {
-                    IsBackground = true,
-                    Name = "GarageCommandThread"
-                };
-                _thread.Start();
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[GarageRemoteController] Socket failed: {e.Message}");
-            }
-        }
-
-        void CloseSocket()
-        {
-            _running = false;
-            try { _udp?.Close(); } catch { /* ignore */ }
-            if (_thread != null && _thread.IsAlive)
-                _thread.Join(800);
-            _thread = null;
-        }
-
-        void ReceiveLoop()
-        {
-            var remote = new IPEndPoint(IPAddress.Any, 0);
-            while (_running)
-            {
-                try
-                {
-                    byte[] data = _udp.Receive(ref remote);
-                    if (GarageCommandData.TryDeserialize(data, data.Length,
-                            out GarageCommandData parsed))
-                    {
-                        lock (_lock)
-                        {
-                            _pending    = parsed;
-                            _hasCommand = true;
-                        }
-                        RemoteIP = remote.Address.ToString();
-
-                        // Send 1-byte ACK back to controller phone so it can confirm CONNECTED
-                        try
-                        {
-                            byte[] ack = new byte[] { 0x01 };
-                            _udp.Send(ack, ack.Length, remote);
-                        }
-                        catch { /* non-fatal */ }
-                    }
-                }
-                catch (SocketException sex)
-                {
-                    if (sex.SocketErrorCode != SocketError.TimedOut && _running)
-                        Debug.LogWarning($"[GarageRemoteController] {sex.Message}");
-                }
-                catch (ObjectDisposedException) { break; }
-                catch (Exception e)
-                {
-                    if (_running) Debug.LogError($"[GarageRemoteController] {e.Message}");
-                }
-            }
+            _pending    = new GarageCommandData { t = "garage", command = env.command, param = env.param };
+            _hasCommand = true;
         }
 
         void UpdateStatus(string msg)
@@ -323,9 +251,9 @@ namespace ALIyerEdon.RemoteInput
             if (statusText != null) statusText.text = msg;
         }
 
-        // ── Auto-created on-screen IP overlay ─────────────────
+        // ── Auto-created on-screen room-code overlay ──────────
         // Mobile builds have no accessible console, so this label is the only
-        // way to read the device's IP:port needed to connect the phone.
+        // way to read the room code needed to connect the phone.
         Text CreateStatusHUD()
         {
             var cGO    = new GameObject("GarageRemote_HUD_Canvas");

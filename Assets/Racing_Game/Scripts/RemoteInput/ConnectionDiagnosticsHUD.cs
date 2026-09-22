@@ -151,9 +151,9 @@ namespace ALIyerEdon.RemoteInput
                       $"REMOTE INPUT  [{state}]", _bold);
             cy += ROW_H + 2;
 
-            // ── IP ────────────────────────────────────────────
-            Row(ref cy, "Remote IP", manager.IsConnected ? manager.RemoteIP : "–");
-            Row(ref cy, "Local IP",  manager.LocalIP + ":" + manager.listenPort.ToString());
+            // ── Room ──────────────────────────────────────────
+            Row(ref cy, "Peer",      manager.IsConnected ? manager.RemoteIP : "–");
+            Row(ref cy, "Room Code", manager.LocalIP);
 
             cy += 4;
 

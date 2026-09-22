@@ -16,7 +16,7 @@ namespace ALIyerEdon.RemoteInput
     public class RemoteInputDriver : MonoBehaviour
     {
         [Header("Optional HUD")]
-        [Tooltip("Assign a UI Text / TMP_Text component to show connection status & local IP.")]
+        [Tooltip("Assign a UI Text / TMP_Text component to show connection status & room code.")]
         public Text statusText;            // swap for TMP_Text if you use TextMeshPro
 
         [Header("Smoothing")]
@@ -56,12 +56,11 @@ namespace ALIyerEdon.RemoteInput
                 Debug.Log("[RemoteInputDriver] Car_AI disabled – using remote input.");
             }
 
-            // Show the local IP so the user knows what to type on the controller phone
-            string localIP = UDPInputReceiver.LocalIPAddress();
-            Debug.Log($"[RemoteInputDriver] Game device IP: {localIP}  Port: {_receiver.listenPort}");
+            // Show the room code so the user knows what to type on the controller phone
+            Debug.Log($"[RemoteInputDriver] Room code: {_receiver.roomCode}");
 
             if (statusText != null)
-                statusText.text = $"IP: {localIP}:{_receiver.listenPort}\nWaiting for controller…";
+                statusText.text = $"Room: {_receiver.roomCode}\nWaiting for controller…";
         }
 
         // ── Every frame: pull latest packet → smooth → Move() ───
@@ -89,7 +88,7 @@ namespace ALIyerEdon.RemoteInput
                     statusText.text = $"Controller: {_receiver.RemoteIP}\n" +
                                       $"Motor: {_smoothMotor:F2}  Steer: {_smoothSteer:F2}";
                 else
-                    statusText.text = $"IP: {UDPInputReceiver.LocalIPAddress()}:{_receiver.listenPort}\n" +
+                    statusText.text = $"Room: {_receiver.roomCode}\n" +
                                       "Waiting for controller…";
             }
         }

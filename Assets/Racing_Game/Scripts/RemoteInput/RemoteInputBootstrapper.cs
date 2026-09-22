@@ -24,8 +24,8 @@ namespace ALIyerEdon.RemoteInput
     {
         // ── Inspector ─────────────────────────────────────────────
         [Header("Remote Input Settings")]
-        [Tooltip("UDP port to listen on.")]
-        public int   listenPort      = 5555;
+        [Tooltip("Room code the controller phone must enter. Leave blank to auto-generate one per device (recommended).")]
+        public string roomCode       = "";
         [Tooltip("Seconds of silence before input is zeroed.")]
         public float timeoutSeconds  = 2f;
         [Tooltip("Always activate, ignoring PlayerPrefs. Useful during development.")]
@@ -34,7 +34,7 @@ namespace ALIyerEdon.RemoteInput
         [Header("HUD (optional)")]
         [Tooltip("Assign an existing Text element. Leave null to auto-create one.")]
         public Text  statusText;
-        [Tooltip("Auto-create a minimal IP/status overlay when statusText is null.")]
+        [Tooltip("Auto-create a minimal room-code/status overlay when statusText is null.")]
         public bool  autoCreateHUD   = true;
 
         // ── Static helpers ────────────────────────────────────────
@@ -79,7 +79,7 @@ namespace ALIyerEdon.RemoteInput
             InjectAdapter(playerGO, manager);
 
             Debug.Log($"[RemoteInputBootstrapper] Ready. " +
-                      $"IP: {UDPInputReceiver.LocalIPAddress()}:{listenPort}  " +
+                      $"Room: {manager.roomCode}  " +
                       $"Player: '{playerGO.name}'");
         }
 
@@ -95,7 +95,7 @@ namespace ALIyerEdon.RemoteInput
             if (mgr == null)
                 mgr = gameObject.AddComponent<RemoteInputManager>();
 
-            mgr.listenPort     = listenPort;
+            mgr.roomCode       = roomCode;
             mgr.timeoutSeconds = timeoutSeconds;
             return mgr;
         }
@@ -103,9 +103,9 @@ namespace ALIyerEdon.RemoteInput
         // ── Inject CarInputAdapter onto the player car ────────────
         void InjectAdapter(GameObject playerGO, RemoteInputManager manager)
         {
-            // Note: Local input (InputSystem) remains active and functional until a remote packet
-            // actually arrives on port 5555. CarInputAdapter handles disabling local input in
-            // OnRemoteConnected and re-enabling it in OnRemoteDisconnected.
+            // Note: Local input (InputSystem) remains active and functional until a remote
+            // packet actually arrives over the relay. CarInputAdapter handles disabling
+            // local input in OnRemoteConnected and re-enabling it in OnRemoteDisconnected.
 
             // CarInputAdapter coordinates remote vs local input
             var adapter = playerGO.GetComponent<CarInputAdapter>();
@@ -116,12 +116,12 @@ namespace ALIyerEdon.RemoteInput
             adapter.manageLocalInputComponents = true;
 
             // Resolve HUD text
-            Text hud = statusText ?? (autoCreateHUD ? CreateStatusHUD() : null);
+            Text hud = statusText ?? (autoCreateHUD ? CreateStatusHUD(manager.roomCode) : null);
             adapter.statusText = hud;
         }
 
         // ── Auto-create a minimal status overlay ─────────────────
-        Text CreateStatusHUD()
+        Text CreateStatusHUD(string room)
         {
             Canvas canvas = FindFirstObjectByType<Canvas>();
             Transform canvasT;
@@ -164,7 +164,7 @@ namespace ALIyerEdon.RemoteInput
             txt.fontSize  = 18;
             txt.color     = Color.white;
             txt.alignment = TextAnchor.MiddleLeft;
-            txt.text      = $"Game IP: {UDPInputReceiver.LocalIPAddress()}";
+            txt.text      = $"Room: {room}";
 
             return txt;
         }

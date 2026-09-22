@@ -2,6 +2,15 @@
 // UDPInputSender.cs
 // CONTROLLER APK side (RemoteController scene).
 //
+// NOTE: despite the class name (kept unchanged so existing scene
+// references don't break), this no longer sends raw UDP packets.
+// It joins a "room" on the relay server (see RelayLink.cs /
+// RelayServer/) using a short room code instead of the game
+// device's local IP address, and sends drive input as JSON over
+// a WebSocket. This lets the controller reach a WebGL-hosted game
+// over the open internet, not just a shared Wi-Fi network — and
+// browsers cannot open a raw UDP socket at all.
+//
 // Steering modes (set via SetSteerMode):
 //   Joystick     – touch-drag analog zone (default)
 //   Gyroscope    – device rotation rate, calibrated on demand
@@ -12,9 +21,6 @@
 //   Throttle / Brake / HandBrake / Nitro – hold buttons
 //──────────────────────────────────────────────────────────────
 
-using System;
-using System.Net;
-using System.Net.Sockets;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.InputSystem;
@@ -28,8 +34,8 @@ namespace ALIyerEdon.RemoteInput
     {
         // ── Network ───────────────────────────────────────────
         [Header("Network")]
-        public string targetIP   = "192.168.1.100";
-        public int    targetPort = 5555;
+        [Tooltip("Room code shown on the game's screen. Both devices must use the same code.")]
+        public string roomCode = "";
         [Range(10, 60)]
         public int    sendRate   = 30;
         [Tooltip("True only when the phone has transitioned to the driving screen.")]
@@ -78,8 +84,7 @@ namespace ALIyerEdon.RemoteInput
         [HideInInspector] public bool  GyroAvailable;
 
         // ── Private ───────────────────────────────────────────
-        UdpClient  _udpClient;
-        IPEndPoint _endPoint;
+        RelayLink _link;
 
         bool _throttleHeld;
         bool _brakeHeld;
@@ -106,13 +111,13 @@ namespace ALIyerEdon.RemoteInput
         {
             _sendInterval = 1f / sendRate;
 
-            // Restore saved IP
+            // Restore saved room code
             if (ipInputField != null)
             {
-                string saved = PlayerPrefs.GetString("RemoteTargetIP", targetIP);
+                string saved = PlayerPrefs.GetString("RemoteRoomCode", roomCode);
                 ipInputField.text = saved;
-                targetIP = saved;
-                ipInputField.onEndEdit.AddListener(OnIPChanged);
+                roomCode = saved;
+                ipInputField.onEndEdit.AddListener(OnRoomCodeChanged);
             }
 
             // Restore saved mode
@@ -136,11 +141,11 @@ namespace ALIyerEdon.RemoteInput
             if (Accelerometer.current != null)
                 UnityEngine.InputSystem.InputSystem.EnableDevice(Accelerometer.current);
 
-            OpenSocket();
+            ConnectRelay();
         }
 
-        void OnDestroy()         => CloseSocket();
-        void OnApplicationQuit() => CloseSocket();
+        void OnDestroy()         => _link?.Disconnect();
+        void OnApplicationQuit() => _link?.Disconnect();
 
         // ── Update ────────────────────────────────────────────
         void Update()
@@ -163,9 +168,10 @@ namespace ALIyerEdon.RemoteInput
                 string modeStr = steerMode == SteerMode.Gyroscope
                     ? $"GYRO {RawGyroAngle:F1}°"
                     : steerMode.ToString();
+                string peer = _link != null && _link.PeerConnected ? "linked" : "waiting";
                 debugText.text =
                     $"M:{_motorValue:F2}  S:{_steerValue:F2}  [{modeStr}]\n" +
-                    $"HB:{_handBrakeHeld}  N:{_nitroHeld}  → {targetIP}:{targetPort}";
+                    $"HB:{_handBrakeHeld}  N:{_nitroHeld}  → room {roomCode} ({peer})";
             }
         }
 
@@ -195,41 +201,23 @@ namespace ALIyerEdon.RemoteInput
         // "neutral" is whatever the phone was pointing at when
         // CalibrateGyro() was called, then extract the roll
         // component (tilt left/right) and map it to -1…+1.
-        //
-        // The New Input System's AttitudeSensor gives the same attitude
-        // Quaternion the legacy Input.gyro.attitude used to, in the same
-        // right-handed space where:
-        //   x = roll (tilt left/right when held in landscape)
-        //   y = yaw
-        //   z = pitch
-        // We re-map to world-space roll using the calibration
-        // inverse so the output is always relative to neutral.
         float SampleGyro()
         {
             if (!GyroAvailable || AttitudeSensor.current == null) return 0f;
 
-            // Convert Unity gyro space → world Quaternion
             Quaternion raw        = AttitudeSensor.current.attitude.ReadValue();
             Quaternion worldSpace = GyroToWorld(raw);
-
-            // Apply calibration: remove neutral orientation
             Quaternion relative   = Quaternion.Inverse(_gyroCalibrationOffset) * worldSpace;
 
-            // Extract roll angle (rotation around the forward/z axis in landscape)
-            // eulerAngles.z gives us the roll in 0-360°; remap to -180…+180
             float rollDeg = relative.eulerAngles.z;
             if (rollDeg > 180f) rollDeg -= 360f;
 
             RawGyroAngle = rollDeg;
 
-            // Apply deadzone
             float absRoll = Mathf.Abs(rollDeg);
             if (absRoll < gyroDeadzone) rollDeg = 0f;
 
-            // Map to -1…+1
             float target = Mathf.Clamp(rollDeg / gyroMaxAngle, -1f, 1f);
-
-            // Low-pass smooth
             _gyroSteerSmoothed = Mathf.Lerp(target, _gyroSteerSmoothed, gyroSmoothing);
 
             return _gyroSteerSmoothed;
@@ -298,86 +286,71 @@ namespace ALIyerEdon.RemoteInput
         // ── Send packet ───────────────────────────────────────
         void SendPacket()
         {
-            // Resync the endpoint if the IP field was edited without tapping CONNECT.
+            // Resync the room if the code field was edited without tapping CONNECT.
             if (ipInputField != null)
             {
                 string current = ipInputField.text.Trim();
-                if (!string.IsNullOrEmpty(current) && current != targetIP)
-                    OnIPChanged(current);
+                if (!string.IsNullOrEmpty(current) && current != roomCode)
+                    OnRoomCodeChanged(current);
             }
 
-            if (_udpClient == null || _endPoint == null) return;
+            if (_link == null) return;
 
-            byte[] bytes = new RemoteInputData
+            var msg = new RemoteInputData
             {
+                t         = "drive",
                 motor     = _motorValue,
                 steer     = _steerValue,
                 handBrake = _handBrakeHeld,
                 nitro     = _nitroHeld
-            }.Serialize();
-
-            try   { _udpClient.Send(bytes, bytes.Length, _endPoint); }
-            catch (Exception e) { Debug.LogWarning($"[UDPInputSender] {e.Message}"); }
+            };
+            _link.SendJson(JsonUtility.ToJson(msg));
         }
 
-        // ── Socket ────────────────────────────────────────────
-        void OpenSocket()
+        // ── Relay connection ──────────────────────────────────
+        void ConnectRelay()
         {
-            try
+            if (_link == null)
+                _link = GetComponent<RelayLink>() ?? gameObject.AddComponent<RelayLink>();
+
+            if (string.IsNullOrEmpty(roomCode))
             {
-                _udpClient = new UdpClient();
-                _udpClient.EnableBroadcast = false;
-                _endPoint = new IPEndPoint(IPAddress.Parse(targetIP), targetPort);
-                if (statusText != null)
-                    statusText.text = $"Ready → {targetIP}:{targetPort}";
+                if (statusText != null) statusText.text = "Enter a room code";
+                return;
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"[UDPInputSender] {e.Message}");
-                if (statusText != null) statusText.text = "Error – check IP";
-            }
+
+            _link.Connect(roomCode, "controller");
+            if (statusText != null)
+                statusText.text = $"Connecting → room {roomCode}";
         }
 
-        void CloseSocket()
+        void OnRoomCodeChanged(string newCode)
         {
-            try { _udpClient?.Close(); } catch { /* ignore */ }
-            _udpClient = null;
-        }
+            newCode = newCode.Trim();
+            if (string.IsNullOrEmpty(newCode)) return;
 
-        void OnIPChanged(string newIP)
-        {
-            newIP = newIP.Trim();
-            if (string.IsNullOrEmpty(newIP)) return;
-            if (newIP.Contains(":"))
-                newIP = newIP.Split(':')[0].Trim();
+            roomCode = newCode;
+            if (ipInputField != null && ipInputField.text != roomCode)
+                ipInputField.text = roomCode;
 
-            targetIP = newIP;
-            if (ipInputField != null && ipInputField.text != targetIP)
-                ipInputField.text = targetIP;
-
-            PlayerPrefs.SetString("RemoteTargetIP", targetIP);
-            CloseSocket();
-            OpenSocket();
+            PlayerPrefs.SetString("RemoteRoomCode", roomCode);
+            ConnectRelay();
 
             var garage = GetComponent<GarageControllerUI>() ?? FindFirstObjectByType<GarageControllerUI>();
-            if (garage != null && garage.targetIP != targetIP)
+            if (garage != null && garage.roomCode != roomCode)
             {
-                garage.SetTargetIP(targetIP);
+                garage.SetRoomCode(roomCode);
             }
         }
 
-        public void SetTargetIP(string newIP)
+        public void SetRoomCode(string newCode)
         {
-            newIP = newIP.Trim();
-            if (string.IsNullOrEmpty(newIP)) return;
-            if (newIP.Contains(":"))
-                newIP = newIP.Split(':')[0].Trim();
+            newCode = newCode.Trim();
+            if (string.IsNullOrEmpty(newCode) || newCode == roomCode) return;
 
-            if (newIP == targetIP) return;
-            targetIP = newIP;
-            if (ipInputField != null) ipInputField.text = targetIP;
-            CloseSocket();
-            OpenSocket();
+            roomCode = newCode;
+            if (ipInputField != null) ipInputField.text = roomCode;
+            ConnectRelay();
         }
 
         public void SetDrivingActive(bool active)
@@ -439,9 +412,6 @@ namespace ALIyerEdon.RemoteInput
             _gyroCalibrationOffset = GyroToWorld(AttitudeSensor.current.attitude.ReadValue());
             _gyroSteerSmoothed     = 0f;
             _gyroCalibrated        = true;
-            PlayerPrefs.SetString("GyroCal",
-                $"{_gyroCalibrationOffset.x},{_gyroCalibrationOffset.y}" +
-                $",{_gyroCalibrationOffset.z},{_gyroCalibrationOffset.w}");
             Debug.Log("[UDPInputSender] Gyro calibrated.");
         }
 
@@ -470,7 +440,7 @@ namespace ALIyerEdon.RemoteInput
 
         public void Connect()
         {
-            if (ipInputField != null) OnIPChanged(ipInputField.text);
+            if (ipInputField != null) OnRoomCodeChanged(ipInputField.text);
         }
     }
 }

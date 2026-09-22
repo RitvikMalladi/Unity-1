@@ -1,12 +1,8 @@
 //──────────────────────────────────────────────────────────────
 // GarageCommandData.cs
-// Shared command packet for garage / menu navigation.
-// Used by GarageRemoteController (game side) and
-// GarageControllerUI (controller phone side).
-//
-// Packet layout (2 bytes):
-//   [0]  byte  command   — GarageCommand enum value
-//   [1]  byte  param     — optional integer parameter (e.g. level ID)
+// Shared garage/menu-navigation message — sent by the Controller
+// app and read by the Game app as a JSON text frame over the
+// relay WebSocket (see RelayLink.cs / RelayServer/).
 //──────────────────────────────────────────────────────────────
 
 using System;
@@ -28,25 +24,11 @@ namespace ALIyerEdon.RemoteInput
         SelectMode  = 10,  // param = 0:Sport 1:Truck 2:F1 3:Offroad
     }
 
+    [Serializable]
     public struct GarageCommandData
     {
-        public const int PacketSize = 2;
-
-        public GarageCommand command;
-        public byte          param;      // level ID or 0
-
-        public byte[] Serialize()
-        {
-            return new byte[] { (byte)command, param };
-        }
-
-        public static bool TryDeserialize(byte[] buf, int len, out GarageCommandData result)
-        {
-            result = default;
-            if (buf == null || len < PacketSize) return false;
-            result.command = (GarageCommand)buf[0];
-            result.param   = buf[1];
-            return true;
-        }
+        public string t;       // always "garage"
+        public byte   command; // GarageCommand enum value
+        public byte   param;   // level ID, mode ID, or 0
     }
 }

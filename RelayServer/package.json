@@ -1,0 +1,13 @@
+{
+  "name": "car-racing-relay-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket relay server pairing the CarRacingControlsConnectivity controller phone with the game build via a room code.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

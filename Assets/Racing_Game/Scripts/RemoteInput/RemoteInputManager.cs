@@ -25,15 +25,15 @@ namespace ALIyerEdon.RemoteInput
 
         // ── Inspector ─────────────────────────────────────────
         [Header("Network")]
-        [Tooltip("UDP port to listen on. Must match UDPInputSender.targetPort.")]
-        public int   listenPort     = 5555;
+        [Tooltip("Room code the controller phone must enter. Leave blank to auto-generate one per device (recommended).")]
+        public string roomCode      = "";
         [Tooltip("Seconds of silence before connection is declared lost.")]
         public float timeoutSeconds = 2f;
         [Tooltip("Keep this manager alive across scene loads.")]
         public bool  persistAcrossScenes = false;
 
         [Header("Reconnect")]
-        [Tooltip("Automatically reopen the socket after an error.")]
+        [Tooltip("Automatically reopen the relay connection after an error.")]
         public bool  autoReconnect        = true;
         [Tooltip("Seconds between reconnect attempts.")]
         [Range(0.5f, 10f)]
@@ -83,7 +83,7 @@ namespace ALIyerEdon.RemoteInput
         // ── Extra public state ────────────────────────────────
         public RemoteInputData RawInput  { get; private set; }
         public bool            Nitro     { get; private set; }
-        public string          LocalIP   => UDPInputReceiver.LocalIPAddress();
+        public string          LocalIP   => _receiver != null ? _receiver.roomCode : roomCode;
 
         // ── Private ───────────────────────────────────────────
         UDPInputReceiver _receiver;
@@ -177,26 +177,28 @@ namespace ALIyerEdon.RemoteInput
             if (_receiver == null)
                 _receiver = gameObject.AddComponent<UDPInputReceiver>();
 
-            _receiver.listenPort          = listenPort;
+            _receiver.roomCode            = roomCode;
             _receiver.timeoutSeconds      = timeoutSeconds;
             _receiver.autoReconnect       = autoReconnect;
             _receiver.reconnectDelay      = reconnectDelay;
             _receiver.maxReconnectAttempts= maxReconnectAttempts;
             _receiver.showDebugLog        = verboseLog;
             _receiver.enabled             = true;
+
+            roomCode = _receiver.roomCode; // pick up the auto-generated code, if any
         }
 
         // ── Public API ────────────────────────────────────────
 
-        /// <summary>Change port at runtime and restart the socket.</summary>
-        public void ChangePort(int newPort)
+        /// <summary>Change the room code at runtime and rejoin.</summary>
+        public void ChangeRoomCode(string newCode)
         {
-            listenPort = newPort;
+            roomCode = newCode;
             if (_receiver != null)
             {
-                _receiver.enabled    = false;
-                _receiver.listenPort = newPort;
-                _receiver.enabled    = true;
+                _receiver.enabled  = false;
+                _receiver.roomCode = newCode;
+                _receiver.enabled  = true;
             }
         }
 
@@ -207,7 +209,7 @@ namespace ALIyerEdon.RemoteInput
                 return $"● {RemoteIP}  M:{Motor:F2}  S:{Steer:F2}" +
                        (Nitro ? "  ⚡" : "");
             string stateStr = State == ConnectionState.Reconnecting ? "Reconnecting…" : "Waiting…";
-            return $"{stateStr}  IP:{LocalIP}:{listenPort}";
+            return $"{stateStr}  Room:{LocalIP}";
         }
 
         /// <summary>Multi-line diagnostics for a developer overlay.</summary>

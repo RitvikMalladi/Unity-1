@@ -1,9 +1,15 @@
 //──────────────────────────────────────────────────────────────
 // GarageControllerUI.cs  —  CONTROLLER APK  (Portrait 800×1200)
 //
+// NOTE: sends garage commands over the relay WebSocket (see
+// RelayLink.cs / RelayServer/) using a room code instead of the
+// game device's local IP — this lets the controller reach a
+// WebGL-hosted game over the internet, not just the same Wi-Fi
+// network.
+//
 //  ┌───────────────────────────────────┐
 //  │  🏎  GARAGE REMOTE CONTROL        │  title bar
-//  │  ● Connected  192.168.1.x:5556    │  status bar
+//  │  ● Connected  room 1234           │  status bar
 //  ├───────────────────────────────────┤
 //  │                                   │
 //  │   ◄ PREVIOUS CAR    NEXT CAR ►    │  car browse
@@ -17,15 +23,13 @@
 //  │   ◄    Level 1 — City Sprint  ►   │  level browse
 //  │                                   │
 //  ├───────────────────────────────────┤
-//  │  Game Device IP:                  │
+//  │  Room Code:                       │
 //  │  [_______________]  [CONNECT]     │
 //  │  ● status text                    │
 //  └───────────────────────────────────┘
 //──────────────────────────────────────────────────────────────
 
 using System;
-using System.Net;
-using System.Net.Sockets;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
@@ -37,8 +41,8 @@ namespace ALIyerEdon.RemoteInput
     public class GarageControllerUI : MonoBehaviour
     {
         [Header("Network")]
-        public string targetIP   = "192.168.1.100";
-        public int    targetPort = 5556;
+        [Tooltip("Room code shown on the game's screen. Both devices must use the same code.")]
+        public string roomCode = "";
 
         [Header("Level Names (shown on controller)")]
         public string[] levelNames = {
@@ -47,10 +51,9 @@ namespace ALIyerEdon.RemoteInput
         };
 
         // ── Private ───────────────────────────────────────────
-        UdpClient  _udp;
-        IPEndPoint _ep;
-        int        _localLevelID;
-        int        _localModeID;
+        RelayLink _link;
+        int       _localLevelID;
+        int       _localModeID;
 
         static readonly string[] ModeNames = { "SPORT", "TRUCK", "F1", "OFFROAD" };
 
@@ -61,9 +64,6 @@ namespace ALIyerEdon.RemoteInput
         TMP_Text       _modeLabel;
         TMP_Text       _connDot;
         GameObject     _canvasRoot;
-
-        bool  _hasAck;
-        float _lastAckTime;
 
         /// <summary>Shows or hides this screen (used when switching to/from the driving screen).</summary>
         public void SetVisible(bool visible) => _canvasRoot?.SetActive(visible);
@@ -106,138 +106,84 @@ namespace ALIyerEdon.RemoteInput
 
             _localLevelID = PlayerPrefs.GetInt("LevelID", 0);
             _localModeID  = Mathf.Clamp(PlayerPrefs.GetInt("GameMode", 0), 0, ModeNames.Length - 1);
-            targetIP = PlayerPrefs.GetString("RemoteTargetIP", targetIP);
+            roomCode = PlayerPrefs.GetString("RemoteRoomCode", roomCode);
 
-            OpenSocket();
             BuildUI();
+            ConnectRelay();
         }
 
-        void OnDestroy()         => CloseSocket();
-        void OnApplicationQuit() => CloseSocket();
+        void OnDestroy()         => _link?.Disconnect();
+        void OnApplicationQuit() => _link?.Disconnect();
 
         void Update()
         {
-            if (_hasAck)
-            {
-                if (Time.time - _lastAckTime > 4f)
-                {
-                    _hasAck = false;
-                    SetStatus($"Ready  →  {targetIP}:{targetPort}", false);
-                }
-                else
-                {
-                    SetStatus($"Connected  →  {targetIP}:{targetPort}", true);
-                }
-            }
+            bool ok = _link != null && _link.PeerConnected;
+            SetStatus(ok ? $"Connected  →  room {roomCode}" : $"Waiting  →  room {roomCode}", ok);
         }
 
         // ── Send ──────────────────────────────────────────────
         void Send(GarageCommand cmd, byte param = 0)
         {
-            // Resync the endpoint if the IP field was edited without tapping CONNECT.
+            // Resync the room if the code field was edited without tapping CONNECT.
             if (_ipField != null)
             {
                 string current = _ipField.text.Trim();
-                if (!string.IsNullOrEmpty(current) && current != targetIP)
-                    OnIPChanged(current);
+                if (!string.IsNullOrEmpty(current) && current != roomCode)
+                    OnRoomCodeChanged(current);
             }
 
-            if (_udp == null || _ep == null) return;
-            byte[] b = new GarageCommandData { command = cmd, param = param }.Serialize();
-            try   { _udp.Send(b, b.Length, _ep); }
-            catch (Exception e) { Debug.LogWarning($"[GarageControllerUI] {e.Message}"); }
+            if (_link == null) return;
+            var msg = new GarageCommandData { t = "garage", command = (byte)cmd, param = param };
+            _link.SendJson(JsonUtility.ToJson(msg));
         }
 
-        // ── Socket ────────────────────────────────────────────
-        void OpenSocket()
+        // ── Relay connection ──────────────────────────────────
+        void ConnectRelay()
         {
-            try
+            if (_link == null)
+                _link = GetComponent<RelayLink>() ?? gameObject.AddComponent<RelayLink>();
+
+            if (string.IsNullOrEmpty(roomCode))
             {
-                _udp = new UdpClient();
-                _ep  = new IPEndPoint(IPAddress.Parse(targetIP), targetPort);
-                _hasAck = false;
-                SetStatus($"Ready  →  {targetIP}:{targetPort}", false);
-                BeginReceive();
+                SetStatus("Enter a room code", false);
+                return;
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"[GarageControllerUI] {e.Message}");
-                SetStatus("⚠  Invalid IP address", false);
-            }
+
+            _link.Connect(roomCode, "controller");
         }
 
-        void BeginReceive()
+        void OnRoomCodeChanged(string code)
         {
-            if (_udp == null) return;
-            try
-            {
-                _udp.BeginReceive(OnReceive, null);
-            }
-            catch { }
-        }
+            code = code.Trim();
+            if (string.IsNullOrEmpty(code)) return;
 
-        void OnReceive(IAsyncResult ar)
-        {
-            try
-            {
-                if (_udp == null) return;
-                IPEndPoint from = new IPEndPoint(IPAddress.Any, 0);
-                byte[] data = _udp.EndReceive(ar, ref from);
-                if (data != null && data.Length > 0)
-                {
-                    _hasAck = true;
-                    _lastAckTime = Time.time;
-                }
-                BeginReceive();
-            }
-            catch { }
-        }
+            roomCode = code;
+            if (_ipField != null && _ipField.text != roomCode)
+                _ipField.text = roomCode;
 
-        void CloseSocket()
-        {
-            try { _udp?.Close(); } catch { }
-            _udp = null;
-        }
-
-        void OnIPChanged(string ip)
-        {
-            ip = ip.Trim();
-            if (string.IsNullOrEmpty(ip)) return;
-            if (ip.Contains(":"))
-                ip = ip.Split(':')[0].Trim();
-
-            targetIP = ip;
-            if (_ipField != null && _ipField.text != targetIP)
-                _ipField.text = targetIP;
-
-            PlayerPrefs.SetString("RemoteTargetIP", targetIP);
-            CloseSocket();
-            OpenSocket();
+            PlayerPrefs.SetString("RemoteRoomCode", roomCode);
+            ConnectRelay();
 
             var driveSender = GetComponent<UDPInputSender>() ?? FindFirstObjectByType<UDPInputSender>();
-            if (driveSender != null && driveSender.targetIP != targetIP)
+            if (driveSender != null && driveSender.roomCode != roomCode)
             {
-                driveSender.SetTargetIP(targetIP);
+                driveSender.SetRoomCode(roomCode);
             }
         }
 
-        public void SetTargetIP(string ip)
+        public void SetRoomCode(string code)
         {
-            ip = ip.Trim();
-            if (string.IsNullOrEmpty(ip)) return;
-            if (ip.Contains(":"))
-                ip = ip.Split(':')[0].Trim();
+            code = code.Trim();
+            if (string.IsNullOrEmpty(code) || code == roomCode) return;
 
-            if (ip == targetIP) return;
-            targetIP = ip;
-            if (_ipField != null) _ipField.text = targetIP;
-            CloseSocket();
-            OpenSocket();
+            roomCode = code;
+            if (_ipField != null) _ipField.text = roomCode;
+            ConnectRelay();
         }
 
         public void Connect()
         {
-            if (_ipField != null) OnIPChanged(_ipField.text);
+            if (_ipField != null) OnRoomCodeChanged(_ipField.text);
         }
 
         void SetStatus(string msg, bool ok)
@@ -329,7 +275,7 @@ namespace ALIyerEdon.RemoteInput
                 0.02f, 0f, 0.10f, 1f, 22, FontStyles.Bold, C_CONN_NO,
                 TextAlignmentOptions.Center);
             _statusText = Txt(statusBar.transform, "StatusTxt",
-                $"Tap CONNECT  →  {targetIP}:{targetPort}",
+                "Enter room code below",
                 0.11f, 0f, 0.97f, 1f, 16, FontStyles.Normal, C_GREY,
                 TextAlignmentOptions.MidlineLeft);
 
@@ -405,14 +351,14 @@ namespace ALIyerEdon.RemoteInput
             Txt(connGrp.transform, "ConnSectionLbl", "CONNECTION",
                 0.05f, 0.82f, 0.95f, 1.00f, 15, FontStyles.Bold, C_SECTION_LBL,
                 TextAlignmentOptions.MidlineLeft);
-            Txt(connGrp.transform, "IPHint", "Type the IP shown on the game device screen",
+            Txt(connGrp.transform, "IPHint", "Type the room code shown on the game screen",
                 0.05f, 0.58f, 0.95f, 0.78f, 13, FontStyles.Italic, C_HINT,
                 TextAlignmentOptions.Center);
 
             _ipField = InputFld(connGrp.transform,
-                PlayerPrefs.GetString("RemoteTargetIP", targetIP),
+                PlayerPrefs.GetString("RemoteRoomCode", roomCode),
                 0.05f, 0.05f, 0.62f, 0.48f);
-            _ipField.onEndEdit.AddListener(OnIPChanged);
+            _ipField.onEndEdit.AddListener(OnRoomCodeChanged);
 
             Btn(connGrp.transform, "Connect", "CONNECT",
                 0.66f, 0.05f, 0.95f, 0.48f, C_CONNECT, 20, Connect);
@@ -503,7 +449,7 @@ namespace ALIyerEdon.RemoteInput
             rt.anchorMax = new Vector2(x1, y1);
             rt.offsetMin = rt.offsetMax = Vector2.zero;
 
-            var ph  = Txt(go.transform, "PH", "192.168.x.x", 0f, 0f, 1f, 1f,
+            var ph  = Txt(go.transform, "PH", "1234", 0f, 0f, 1f, 1f,
                           20, FontStyles.Italic, new Color(0.42f, 0.45f, 0.56f),
                           TextAlignmentOptions.MidlineLeft);
             var txt = Txt(go.transform, "Txt", "", 0f, 0f, 1f, 1f,
@@ -513,9 +459,8 @@ namespace ALIyerEdon.RemoteInput
             f.textComponent = (TMP_Text)txt;
             f.placeholder   = (TMP_Text)ph;
             f.text          = defaultVal;
-            // DecimalNumber only allows a single '.' — an IP address needs three, so use Standard.
             f.contentType    = TMP_InputField.ContentType.Standard;
-            f.characterLimit = 30;
+            f.characterLimit = 12;
             return f;
         }
     }
